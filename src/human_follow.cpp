@@ -11,7 +11,10 @@
 // Mensaje Point_stamped, lee un punto dado en el mapa
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+// Mensaje necesario para la lectra de las coordenadas de las piernas
+#include "std_msgs/msg/float32_multi_array.hpp"
 
 // Seccion de librerias utilitarias
 #include <memory>
@@ -105,6 +108,14 @@ class HumanFollowNode :public rclcpp::Node
                 _1
             ));
 
+            // Subscriptor para lectura de coordenadas
+            sub_coor_ = create_subscription<std_msgs::msg::Float32MultiArray>(
+                "/leg_monitoring/both_legs",
+                10,
+                std::bind(&HumanFollowNode::coordenates_callback,
+                this,
+                _1
+            ));
             // Seccion de creadores de publicadores
             // pub_pose_leida = create_publisher<geometry_msgs::msg::PoseStamped>(
             //     "/ntarobot/human_point",
@@ -141,6 +152,11 @@ class HumanFollowNode :public rclcpp::Node
         void result_callback(
             const GoalHandleNavigateToPose::WrappedResult & result
         );
+        // Funcion para calcular el punto medio dado por las 
+        void coordenates_callback(
+            const std_msgs::msg::Float32MultiArray::SharedPtr msg
+        );
+
         // Funcion para llamado de serviro y envio de posicion objetivo
         void call_server(double x, double y);
         // Funcion para la ejecucion del proceso de navegacion
@@ -151,6 +167,9 @@ class HumanFollowNode :public rclcpp::Node
         // INICIO: Seccion de inicializacion de subscriptores
         // Subscriptor de valor de punto en el espacio
         rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_point_S;
+        // Subscriptor de coordenadas de piernas
+        rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr sub_coor_;
+        rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_amcl_pose_;
         // FINAL
 
         // INICIO: Seccion de creacion de publicadores
@@ -160,12 +179,21 @@ class HumanFollowNode :public rclcpp::Node
         // INICIO: Seccion de creacion de variables de instancia de la calse
         // Primero se crea la variable que corresponde al cliente del servidor de navegacion
         rclcpp_action::Client<NavigateToPose>::SharedPtr navigate_to_pose_client_ptr_;
+        // Se agrega la variable que almacena la ultima posicion del robo
+        geometry_msgs::msg::PoseStamped::SharedPtr robot_pose_;
+        // Se crea tambien la variable que guarda el punto central de las piernas
+        geometry_msgs::msg::Point::SharedPtr central_point_;
+
         // variable de pose para deteccion de punto deseado
         // geometry_msgs::msg::PoseStamped pose;
         // bool validation_Function = false;
         // Variable de lista circular para cada uno de los componentes
         Array x_List;
         Array y_List;
+
+        // Valor de posicion x y y
+        float x_pos = 0.0;
+        float y_pos = 0.0;
 
         // Declaracion de hilo de ejecucion
         std::thread action_thread_;
@@ -186,39 +214,44 @@ void HumanFollowNode::pointS_Callback(const geometry_msgs::msg::PointStamped::Sh
     } 
     cv_.notify_all();
 
-    // Se valida y agrega un valor a cada lista con los puntos especificos dados por el subscriber
-    // if (!x_List.add(msg->point.x)) {
-    //     RCLCPP_ERROR(get_logger(), "La lista de valores x esta llena");
-    // }
-    // // Misma validacion para valores de y
-    // if (!y_List.add(msg->point.y)) {
-    //     RCLCPP_ERROR(get_logger(), "La lista de valores y esta llena");
-    // }
+}
 
-    // Visualizacion de listas de coordenadas
-    // x_List.print();
-    // y_List.print();
+// Funcion de callback para recibi los valores de las piernas publicadas
+void HumanFollowNode::coordenates_callback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
+{
+    // Asignacion de valores no validos
+    x_pos = 0;
+    y_pos = 0;
 
-    // Asignacion de valores de mensaje obtenidos por la lectura de pose
-    // pose.header = msg->header;
-    // // Datos de posicion
-    // pose.pose.position.x = msg->point.x;
-    // pose.pose.position.y = msg->point.y;
-    // pose.pose.position.z = msg->point.z;
-    // // Valor de orientacion estimada
-    // pose.pose.orientation.x = 0;
-    // pose.pose.orientation.y = 0;
-    // pose.pose.orientation.z = 0;
-    // pose.pose.orientation.w = 1;
+    // validacion general para valores unicos de 4 coordenadas
+    if (msg->data.size() == 4){
+        // Conteo de valores negativos para deteccion de unica persona o unica pierna
+        int non_zero_count = 0;
+        // Ciclo de recorrido en el array de datos de piernas
+        for (const auto& value : msg->data){
+            if (value != 0.0){
+                non_zero_count++;
+            }
+        }
 
-    // Publicacion de pose leida
-    // pub_pose_leida->publish(pose);
-    // ejecccion se solicitud de servicio
-    // RCLCPP_ERROR(get_logger(), "Ejecutando servicio - puerta 1");
+        // Validacion de la cantidad de datos en el array solo sean 2
+        if (non_zero_count >= 3){
+            // Asignacion de cada uno de los valores
+            float x1 = msg->data[0];
+            float y1 = msg->data[1];
+            float x2 = msg->data[2];
+            float y2 = msg->data[3];
+
+            // Calculo de punto central
+            this->x_pos = (x1 + x2) / 2.0;
+            this->y_pos = (y1 + y2) / 2.0;
+            RCLCPP_INFO(this->get_logger(), "pos x: %f, pos y: %f", this->x_pos, this->y_pos);
+            // Finalizacion
+            return;
+        }
+    }
+    RCLCPP_WARN(this->get_logger(), "Los datos recibidos no son validos");
     
-    // if (!validation_Function){
-    //     call_server(msg->point.x, msg->point.y);
-    // };
 }
 
 // La siguiente funcion realiza el llamado al servidor de manera que publica la 
@@ -312,19 +345,19 @@ void HumanFollowNode::processAction(void) {
     // Ejecucion continua del hilo mientras la lista tenga datos
     while (rclcpp::ok() && running_) {
         // Bloqueo del hilo
-        RCLCPP_ERROR(get_logger(), "Estancia de prueba 1");
+        //RCLCPP_ERROR(get_logger(), "Estancia de prueba 1");
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [this]() { return !x_List.isEmpty() || !running_; });
-        RCLCPP_ERROR(get_logger(), "Estancia de prueba 2");
+        //RCLCPP_ERROR(get_logger(), "Estancia de prueba 2");
         // Declaracion de valores actuales
         double x_actual;
         double y_actual;
-        RCLCPP_ERROR(get_logger(), "Estancia de prueba 3");
+        //RCLCPP_ERROR(get_logger(), "Estancia de prueba 3");
         // Inicializacion de valores actuales
         while (!x_List.isEmpty() || !y_List.isEmpty()) {
             x_List.popFront(x_actual);
             y_List.popFront(y_actual);
-            RCLCPP_ERROR(get_logger(), "Estancia de prueba 4");
+            //RCLCPP_ERROR(get_logger(), "Estancia de prueba 4");
             lock.unlock(); 
             call_server(x_actual, y_actual);
             lock.lock();
